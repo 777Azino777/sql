@@ -1,0 +1,62 @@
+SE [AnalitDB]
+GO
+/****** StoredProcedure [dbo].[p_KG_Declaraions_Aggr] ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE procedure [dbo].[p_KG_Declaraions_Aggr]
+@p_date date = null
+as
+begin
+declare @date date = isnull(@p_date,getdate())
+truncate table KG_Declarations_buf_tmp
+insert into KG_Declarations_buf_tmp(id, child_id, create_date, source, status_id, unit_id, pref_date, privilege, privOrder)
+	select distinct d.id, d.child_id, convert(date,d.create_date,120) as create_date, ds.name as source,
+	(select top 1 status_id from KG_Declarations_Status s where s.owner_id = d.id and s.date<=@date order by s.date desc) as status_id,
+	(select top 1 unit_id from KG_Declarations_Units u where u.owner_id = d.id and u.date<=@date and u.ord = 1 order by u.date desc) as unit_id,
+	(select top 1 pref_date from KG_Declarations_PrefDates pf where pf.owner_id = d.id and pf.date<=@date order by pf.date desc) as pref_date,
+	--s.status_id, convert(int,unit_id) as unit_id, ef.pref_date,
+	p.name as privilege, p.order_id as privOrder
+	from KG_Declarations d
+	inner join KG_Declarations_Sources ds on ds.id = d.source_id
+	left outer join (select dp.owner_id, dp.date, pl.name, pl.order_id from KG_Declarations_Privilege dp, KG_Privilege pl
+		where pl.id = dp.privilege_id and pl.code is not null and dp.date <= @date
+			and not exists(select 1 from KG_Declarations_Privilege dp2 where dp2.owner_id = dp.owner_id and dp2.date > dp.date and dp2.date <= @date)
+		) as p on p.owner_id = d.id
+	where convert(date,d.create_date,120) <= @date
+
+
+
+--Очистка
+delete from KG_declarations_Aggr where date = @date
+
+
+
+
+--Вставка
+insert into KG_declarations_Aggr(date, unitID, monthes, age, prefAge, actual, privilege, privOrder, source, isPlaced, overdue, queue, transfer, enrolled, count)
+select @date as date, d.unit_id as unitID,
+	DATEDIFF(month,c.birthdate,@date) as monthes,
+	DATEDIFF(month,c.birthdate,@date)/12 as age,
+	DATEDIFF(month,c.birthdate,d.pref_date)/12 as prefAge,
+	case when convert(date,d.pref_date,120)<=convert(date,concat(year(@date)-case when month(@date)<9 then 1 else 0 end,'-09-01'),120)	then 1 else 0 end as actual,
+	d.privilege, d.privOrder, d.source,
+	case when cr.unit_id = d.unit_id then 1 when cr.unit_id <> d.unit_id then 0 else null end as isPlaced, --Признак размещения в садике, 1 - в том же, куда заявление; 0 - в другом; NULL - не размещён
+	case when convert(date,d.pref_date,120)<=@date then 1 else 0 end as overdue,
+	count(distinct case when d.status_id = 3 and cr.unit_id is null then c.id else null end) as queue,
+	count(distinct case when d.status_id = 8 then c.certificate else null end) as transfer,
+	count(distinct case when cr.unit_id is not null and d.status_id in (10,11) then c.id else null end) as enrolled,
+	count(distinct case when convert(date,d.create_date,120) = @date then d.id else null end) as count
+from KG_Declarations_buf_tmp d--@dec_tab d
+inner join KG_Children c on c.id = d.child_id
+left outer join KG_Declarations_Currents cr	on cr.child_id =c.id and cr.date = @date
+group by d.source, d.unit_id,
+	case when convert(date,d.pref_date,120)<=convert(date,concat(year(@date)-case when month(@date)<9 then 1 else 0 end,'-09-01'),120)	then 1 else 0 end,
+	case when convert(date,d.pref_date,120)<=@date then 1 else 0 end,
+	case when cr.unit_id = d.unit_id then 1 when cr.unit_id <> d.unit_id then 0 else null end,
+	d.privOrder, d.privilege,
+	DATEDIFF(month,c.birthdate,@date),
+	DATEDIFF(month,c.birthdate,d.pref_date)/12
+end
